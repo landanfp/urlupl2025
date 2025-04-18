@@ -167,7 +167,7 @@ async def status_check():
 async def setup_web_server():
     """Setup web server for status endpoint"""
     app = web.Application()
-    app.router.add_get('/status', lambda request: status_check())
+    app.router.add_get('/', lambda request: status_check())
 
     # Get port from environment or use default
     port = int(os.getenv("STATUS_PORT", 8080))
@@ -178,7 +178,7 @@ async def setup_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-    logger.info(f"Status endpoint available at http://0.0.0.0:{port}/status")
+    logger.info(f"Status endpoint available at http://0.0.0.0:{port}/")
 
 # Handle all text messages (URLs)
 @app.on_message(filters.text & ~filters.command(["start", "help", "stats", "cleanup"]))
