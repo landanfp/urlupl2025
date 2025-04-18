@@ -9,14 +9,14 @@ from pathlib import Path
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5),
-        logging.StreamHandler()
-    ]
-)
+if os.getenv("ENV") == "development":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler()
+        ]
+    )
 
 logger = logging.getLogger("core.config")
 
