@@ -2,6 +2,11 @@
 
 This is a secure and advanced Telegram bot that can download videos from URLs and send them to you. Just send the bot any video URL and it will download and send it back to you. It can also download videos from YouTube, Twitter, Instagram and many other platforms.
 
+## Note:
+This bot is recommended to be used on Linux systems. During testing, it was observed that the bot works smoothly and without issues on Linux. On Windows, there can be complications while installing the aiohttp Python package, particularly related to C++ build tools. These issues can cause interruptions during setup or runtime.
+
+For a hassle-free experience, it is advised to use Linux (e.g., Ubuntu, Debian) as the development or deployment environment.
+
 ## Features
 
 ### Main Features
@@ -34,7 +39,7 @@ This is a secure and advanced Telegram bot that can download videos from URLs an
 
 ### Requirements
 
-- Python 3.8 or higher
+- Python 3.10 or higher
 - pip (Python package manager)
 - Telegram bot token (get from @BotFather)
 - Telegram API ID and API Hash (get from https://my.telegram.org/apps)
@@ -172,3 +177,22 @@ Example response:
   }
 }
 ```
+
+## ⚠️ Disclaimer and Legal Warning
+
+**IMPORTANT: USE THIS BOT AT YOUR OWN RISK**
+
+This bot is provided for educational and personal use only. The owners and developers of this bot:
+
+- Are NOT responsible for any misuse or illegal activities conducted using this tool
+- Do NOT endorse downloading copyrighted content without proper authorization
+- Cannot be held liable for any legal consequences resulting from improper use
+
+### Copyright and Fair Use
+
+- Always obtain permission from content creators before downloading their videos
+- Respect copyright laws and intellectual property rights
+- Only download YouTube and other platform videos with explicit permission from the content owners
+- Be aware that downloading certain content may violate the Terms of Service of the respective platforms
+
+By using this bot, you acknowledge that you are solely responsible for ensuring your usage complies with applicable laws and platform policies.
