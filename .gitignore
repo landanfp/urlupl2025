@@ -1,0 +1,29 @@
+cookies
+tests
+venv
+video_downloader_bot.session
+video_downloader_bot.session-journal
+.env
+__pycache__/
+*.py[cod]
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for downloaded videos (keep the directory but ignore contents)
+downloads/*
+!downloads/.gitkeep
+
+# OS specific files
+.DS_Store
+Thumbs.db
