@@ -87,6 +87,9 @@ active_downloads = {}
 # Dictionary to track daily download counts per user
 user_download_counts = {}
 
+# Dictionary to track recently processed URLs to prevent duplicates
+recently_processed_urls = {}
+
 async def handle_url(client, message):
     """Handle URL messages"""
     url = message.text.strip()
@@ -95,6 +98,22 @@ async def handle_url(client, message):
     if not url.startswith('http://') and not url.startswith('https://'):
         # Not a URL, ignore silently
         return
+
+    # Check if this URL was recently processed (within the last 30 seconds)
+    current_time = time.time()
+    if url in recently_processed_urls:
+        last_processed_time = recently_processed_urls[url]
+        if current_time - last_processed_time < 30:  # 30 seconds cooldown
+            logger.info(f"Ignoring duplicate URL request: {url}")
+            return
+
+    # Mark this URL as recently processed
+    recently_processed_urls[url] = current_time
+
+    # Clean up old entries from recently_processed_urls
+    for processed_url in list(recently_processed_urls.keys()):
+        if current_time - recently_processed_urls[processed_url] > 60:  # Remove after 60 seconds
+            del recently_processed_urls[processed_url]
 
     # Check if message.from_user is None (can happen in channels or some special cases)
     if message.from_user is None:
@@ -189,6 +208,25 @@ async def handle_url(client, message):
         # Download the video based on URL type
         if is_youtube_url(url):
             success, result = await download_youtube_video(url, file_path, processing_msg, user_id)
+
+            # Handle format selection for YouTube videos
+            if success and result == "format_selection":
+                # Store URL in user data for later use
+                if not hasattr(client, 'user_data'):
+                    client.user_data = {}
+                if user_id not in client.user_data:
+                    client.user_data[user_id] = {}
+
+                # Store the URL and file path for later use
+                client.user_data[user_id]['youtube_url'] = url
+                client.user_data[user_id]['file_path'] = file_path
+                client.user_data[user_id]['processing_msg_id'] = processing_msg.id
+
+                # Decrement counters since we're waiting for user input
+                active_downloads[user_id] -= 1
+                user_download_counts[user_id][today] -= 1
+                return
+
         elif is_social_media_url(url):
             success, result = await download_social_media_video(url, file_path, processing_msg, user_id)
         else:
@@ -234,9 +272,12 @@ async def handle_url(client, message):
 
                 # Delete the downloaded file and any related files to save space
                 try:
-                    # Delete the main file
-                    os.remove(file_path)
-                    logger.info(f"Deleted file: {file_path}")
+                    # Delete the main file if it exists
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.info(f"Deleted file: {file_path}")
+                    else:
+                        logger.info(f"File already deleted or doesn't exist: {file_path}")
 
                     # Check for any other files with similar base name (for audio/video parts)
                     base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -310,9 +351,12 @@ async def handle_url(client, message):
         # Clean up any partial downloads and related files
         try:
             if 'file_path' in locals() and os.path.exists(file_path):
-                # Delete the main file
-                os.remove(file_path)
-                logger.info(f"Cleaned up partial download: {file_path}")
+                # Delete the main file if it exists
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.info(f"Cleaned up partial download: {file_path}")
+                else:
+                    logger.info(f"Partial download already deleted or doesn't exist: {file_path}")
 
                 # Check for any other files with similar base name (for audio/video parts)
                 base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -332,8 +376,11 @@ async def handle_url(client, message):
 
         return  # Return after handling the exception to prevent further processing
 
+# Store progress data for each message ID
+progress_data = {}
+
 async def progress_for_pyrogram(current, total, text, message, start):
-    """Progress callback for Pyrogram"""
+    """Progress callback for Pyrogram with improved rate limiting"""
     try:
         if total == 0:
             return
@@ -344,40 +391,42 @@ async def progress_for_pyrogram(current, total, text, message, start):
         if diff < 1:
             return
 
-        # Global variable to track last update time for this specific upload
-        if not hasattr(progress_for_pyrogram, 'last_update_time'):
-            progress_for_pyrogram.last_update_time = 0
+        # Get message ID to track updates per message
+        message_id = f"{message.chat.id}_{message.id}"
 
-        # Minimum time between updates (60 seconds + random jitter)
-        min_update_interval = 60 + random.uniform(15, 30)
+        # Initialize progress data for this message if not exists
+        if message_id not in progress_data:
+            progress_data[message_id] = {
+                "last_update_time": 0,
+                "last_percentage": -1,
+                "update_count": 0,
+                "min_interval": 60,  # Start with a conservative interval (60 seconds)
+                "last_text": ""
+            }
+
+        # Get progress data for this specific message
+        msg_data = progress_data[message_id]
+        last_update_time = msg_data["last_update_time"]
+        last_percentage = msg_data["last_percentage"]
+        min_interval = msg_data["min_interval"]
 
         # Calculate progress percentage
         speed = current / diff
         percentage = current * 100 / total
+        percentage_int = int(percentage)  # Integer percentage for comparison
 
-        # Only update at specific milestones to reduce frequency
-        # For downloads: 0%, 25%, 50%, 75%, 100% or if it's been a very long time
-        # For uploads: More frequent updates with smaller intervals
+        # Determine if we should update based on several factors
         should_update = False
 
-        # Check if this is an upload (text starts with "📤")
-        is_upload = text.startswith("📤")
-
-        if is_upload:
-            # For uploads: Update more frequently with smaller percentage intervals
-            milestones = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100]
-            # Check if we're at a milestone percentage with smaller tolerance for uploads
-            is_milestone = any(abs(percentage - m) < 2.0 for m in milestones)
-            # Use shorter minimum interval for uploads
-            min_update_interval = 10 + random.uniform(5, 10)
-        else:
-            # For downloads: Use original milestone settings
-            milestones = [0, 25, 50, 75, 100]
-            # Check if we're at a milestone percentage
-            is_milestone = any(abs(percentage - m) < 5.0 for m in milestones)
-
-        # Update at milestones and if enough time has passed
-        if (is_milestone or now - progress_for_pyrogram.last_update_time > 120) and now - progress_for_pyrogram.last_update_time >= min_update_interval:
+        # 1. Always update for the first time (0%) and last time (100%)
+        if last_percentage == -1 or percentage_int >= 99:
+            should_update = True
+        # 2. Update at 25% intervals if enough time has passed
+        elif (percentage_int // 25 > last_percentage // 25) and (now - last_update_time >= min_interval):
+            should_update = True
+        # 3. For uploads (indicated by 📤 in text), use more conservative updates
+        elif "📤" in text and (now - last_update_time >= min_interval * 2):
+            # For uploads, only update every 2x the minimum interval
             should_update = True
 
         if not should_update:
@@ -397,30 +446,52 @@ async def progress_for_pyrogram(current, total, text, message, start):
         else:
             eta = 0
 
-        text = f"{text}\n\n{progress} {percentage:.1f}%\n⚡️ {current_mb:.2f} MB / {total_mb:.2f} MB\n🚀 {speed / 1024 / 1024:.2f} MB/s\n⏱ {format_time(eta)}"
+        new_text = f"{text}\n\n{progress} {percentage:.1f}%\n⚡️ {current_mb:.2f} MB / {total_mb:.2f} MB\n🚀 {speed / 1024 / 1024:.2f} MB/s\n⏱ {format_time(eta)}"
 
+        # Skip update if text hasn't changed (prevents MESSAGE_NOT_MODIFIED errors)
+        if new_text == msg_data["last_text"]:
+            return
+
+        # Update the message
         try:
-            await message.edit_text(text)
-            # Update the last update time only on successful edit
-            progress_for_pyrogram.last_update_time = now
+            await message.edit_text(new_text)
+
+            # Update progress data on successful edit
+            msg_data["last_update_time"] = now
+            msg_data["last_percentage"] = percentage_int
+            msg_data["update_count"] += 1
+            msg_data["last_text"] = new_text
+
+            # Gradually reduce the interval as successful updates occur
+            # But never go below 30 seconds to avoid rate limits
+            if msg_data["update_count"] > 5 and min_interval > 30:
+                msg_data["min_interval"] = max(30, min_interval - 5)
+
+            # Clean up old message IDs to prevent memory leaks
+            current_time = time.time()
+            for msg_id in list(progress_data.keys()):
+                if current_time - progress_data[msg_id]["last_update_time"] > 3600:  # 1 hour
+                    del progress_data[msg_id]
+
         except Exception as e:
-            if "FLOOD_WAIT" in str(e):
-                # If we hit a flood wait, increase the minimum interval for future updates
+            error_str = str(e)
+            if "MESSAGE_NOT_MODIFIED" in error_str:
+                # Ignore this error, just update our last text to match
+                msg_data["last_text"] = new_text
+            elif "FLOOD_WAIT" in error_str:
+                # If we hit a flood wait, increase the minimum interval
                 logger.warning(f"FLOOD_WAIT encountered: {e}")
+
+                # Try to extract wait time
                 try:
-                    # Wait the required time plus some extra buffer
-                    wait_time = int(str(e).split("wait of ")[1].split(" seconds")[0]) + 30
-                    await asyncio.sleep(wait_time)
-                    # Try again after waiting
-                    try:
-                        await message.edit_text(text)
-                        progress_for_pyrogram.last_update_time = time.time() + 120  # Add extra buffer to last update time
-                    except Exception as retry_error:
-                        logger.error(f"Error during retry after FLOOD_WAIT: {retry_error}")
-                except Exception as parse_error:
-                    logger.error(f"Error parsing FLOOD_WAIT time: {parse_error}")
-                    # Wait a conservative amount of time
-                    await asyncio.sleep(180)
+                    wait_time = int(error_str.split("wait of ")[1].split(" seconds")[0])
+                    # Increase minimum interval to at least wait_time + buffer
+                    msg_data["min_interval"] = max(msg_data["min_interval"], wait_time + 30)
+                except:
+                    # If we can't extract the wait time, double the current interval
+                    msg_data["min_interval"] = min(300, msg_data["min_interval"] * 2)  # Cap at 5 minutes
+
+                logger.info(f"Increased minimum update interval to {msg_data['min_interval']} seconds for message {message_id}")
             else:
                 logger.error(f"Error updating progress message: {e}")
     except Exception as e:

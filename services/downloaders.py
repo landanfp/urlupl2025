@@ -108,53 +108,67 @@ async def cleanup_old_downloads(max_age_hours=24):
     try:
         current_time = time.time()
         max_age_seconds = max_age_hours * 3600
+        files_cleaned = 0
 
         # Get all files in the download directory
         for root, dirs, files in os.walk(DOWNLOAD_DIR):
             for file in files:
-                file_path = os.path.join(root, file)
-
                 # Skip .gitkeep and other special files
                 if file.startswith('.'):
                     continue
 
-                # Check file age
-                file_age = current_time - os.path.getmtime(file_path)
-                if file_age > max_age_seconds:
-                    try:
-                        # Get base name to find related files
-                        base_name = os.path.splitext(os.path.basename(file_path))[0]
-                        dir_path = os.path.dirname(file_path)
+                file_path = os.path.join(root, file)
 
-                        # Delete the main file
-                        os.remove(file_path)
-                        logger.info(f"Cleaned up old file: {file_path}")
+                try:
+                    # Check if file exists and get its age
+                    if not os.path.exists(file_path):
+                        continue
 
-                        # Find and delete any related files with the same base name
-                        for related_file in os.listdir(dir_path):
-                            if related_file.startswith(base_name) and os.path.join(dir_path, related_file) != file_path:
-                                try:
-                                    related_path = os.path.join(dir_path, related_file)
+                    file_age = current_time - os.path.getmtime(file_path)
+                    if file_age <= max_age_seconds:
+                        continue  # Skip files that aren't old enough
+
+                    # Get base name to find related files
+                    base_name = os.path.splitext(os.path.basename(file_path))[0]
+                    dir_path = os.path.dirname(file_path)
+
+                    # Delete the main file
+                    os.remove(file_path)
+                    files_cleaned += 1
+                    logger.info(f"Cleaned up old file: {file_path}")
+
+                    # Find and delete any related files with the same base name
+                    for related_file in os.listdir(dir_path):
+                        if related_file.startswith(base_name) and os.path.join(dir_path, related_file) != file_path:
+                            try:
+                                related_path = os.path.join(dir_path, related_file)
+                                if os.path.exists(related_path):
                                     os.remove(related_path)
                                     logger.info(f"Cleaned up related file: {related_path}")
-                                except Exception as related_e:
-                                    logger.error(f"Error removing related file {related_file}: {related_e}")
-                    except Exception as e:
-                        logger.error(f"Error removing old file {file_path}: {e}")
+                            except Exception as related_e:
+                                logger.error(f"Error removing related file {related_file}: {related_e}")
+
+                except Exception as file_error:
+                    logger.error(f"Error processing file {file_path}: {file_error}")
 
         # Clean up empty user directories
         for item in os.listdir(DOWNLOAD_DIR):
             if item.startswith('user_'):
                 dir_path = os.path.join(DOWNLOAD_DIR, item)
-                if os.path.isdir(dir_path) and not os.listdir(dir_path):
+                if os.path.isdir(dir_path):
                     try:
-                        os.rmdir(dir_path)
-                        logger.info(f"Removed empty directory: {dir_path}")
-                    except Exception as e:
-                        logger.error(f"Error removing directory {dir_path}: {e}")
+                        # Check if directory is empty
+                        if not os.listdir(dir_path):
+                            os.rmdir(dir_path)
+                            logger.info(f"Removed empty directory: {dir_path}")
+                    except Exception as dir_error:
+                        logger.error(f"Error checking/removing directory {dir_path}: {dir_error}")
 
+        logger.info(f"Cleanup completed: {files_cleaned} files removed")
+        return files_cleaned
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
+        return 0
 
 async def check_disk_space():
     """Check available disk space"""
@@ -181,10 +195,142 @@ async def check_disk_space():
         logger.error(f"Error checking disk space: {e}")
         return None
 
-async def download_youtube_video(url, file_path, message, user_id=None):
+async def get_youtube_formats(url):
+    """Get available formats for a YouTube video"""
+    try:
+        # Clean and normalize YouTube URL
+        url = clean_youtube_url(url)
+        logger.info(f"Getting formats for YouTube URL: {url}")
+
+        # Configure yt-dlp options for format extraction
+        ydl_opts = {
+            'quiet': False,  # Enable output for debugging
+            'no_warnings': False,  # Show warnings for debugging
+            'nocheckcertificate': True,
+            'geo_bypass': True,
+            'skip_download': True,  # Don't download, just get info
+        }
+
+        # Extract available formats
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    logger.error(f"No info returned for URL: {url}")
+                    return None
+                logger.info(f"Successfully extracted info for video: {info.get('title', 'Unknown')}")
+            except Exception as extract_error:
+                logger.error(f"Error extracting info: {extract_error}")
+                return None
+
+            # Get video title and other metadata
+            video_title = info.get('title', 'Unknown Title')
+            video_id = info.get('id', 'Unknown ID')
+            duration = info.get('duration', 0)  # Duration in seconds
+            thumbnail = info.get('thumbnail', None)
+
+            # Filter and organize formats
+            formats = []
+            audio_formats = []
+            seen_resolutions = set()
+
+            # First, find the best audio format for MP3 conversion
+            best_audio = None
+            for f in info.get('formats', []):
+                if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                    # This is an audio-only format
+                    f_abr = f.get('abr', 0) or 0  # Handle None values
+                    best_abr = best_audio.get('abr', 0) or 0 if best_audio else 0
+                    if best_audio is None or f_abr > best_abr:
+                        best_audio = f
+
+            # Add MP3 option if we found an audio format
+            if best_audio:
+                audio_formats.append({
+                    'format_id': f"audio-mp3",
+                    'ext': 'mp3',
+                    'format_note': f"MP3 Audio",
+                    'filesize': best_audio.get('filesize', 0) or 0,  # Handle None values
+                    'abr': best_audio.get('abr', 0) or 0,  # Handle None values
+                })
+
+            # Add video formats (only mp4 with audio)
+            for f in info.get('formats', []):
+                # Skip formats without video
+                if f.get('vcodec') == 'none':
+                    continue
+
+                # Get resolution
+                height = f.get('height', 0) or 0  # Handle None values
+                width = f.get('width', 0) or 0    # Handle None values
+                resolution = f"{width}x{height}" if width and height else "Unknown"
+
+                # Skip duplicates
+                if resolution in seen_resolutions:
+                    continue
+
+                # Only include formats with both video and audio, or formats that can be merged
+                has_audio = f.get('acodec') != 'none'
+                is_mp4 = f.get('ext') == 'mp4'
+
+                if (is_mp4 and has_audio) or (height in [144, 240, 360, 480, 720, 1080, 1440, 2160]):
+                    format_id = f.get('format_id', '')
+                    format_note = f.get('format_note', '')
+                    filesize = f.get('filesize', 0) or 0  # Handle None values
+
+                    # Create a readable format description
+                    if height:
+                        quality = f"{height}p"
+                        if height >= 720:
+                            quality += " HD"
+                        if height >= 1080:
+                            quality += " FHD"
+                        if height >= 2160:
+                            quality += " 4K"
+                    else:
+                        quality = format_note or "Unknown"
+
+                    formats.append({
+                        'format_id': format_id,
+                        'ext': f.get('ext', 'mp4'),
+                        'height': height,
+                        'width': width,
+                        'resolution': resolution,
+                        'quality': quality,
+                        'format_note': format_note,
+                        'filesize': filesize,
+                        'has_audio': has_audio,
+                    })
+                    seen_resolutions.add(resolution)
+
+            # Sort formats by resolution (height)
+            formats.sort(key=lambda x: x.get('height', 0), reverse=True)
+
+            # Add a "best" option at the top
+            formats.insert(0, {
+                'format_id': 'best',
+                'ext': 'mp4',
+                'quality': 'Best Quality',
+                'format_note': 'Highest quality available',
+                'filesize': 0,
+            })
+
+            return {
+                'title': video_title,
+                'id': video_id,
+                'duration': duration,
+                'thumbnail': thumbnail,
+                'formats': formats,
+                'audio_formats': audio_formats,
+            }
+    except Exception as e:
+        logger.error(f"Error getting YouTube formats: {e}")
+        return None
+
+async def download_youtube_video(url, file_path, message, user_id=None, format_id=None, is_audio=False):
     """Download video from YouTube using yt-dlp"""
     try:
-        await message.edit_text("⏳ Downloading YouTube video...")
+        await message.edit_text("⏳ Analyzing YouTube video...")
 
         # Clean and normalize YouTube URL to avoid tracking parameters
         url = clean_youtube_url(url)
@@ -200,20 +346,125 @@ async def download_youtube_video(url, file_path, message, user_id=None):
             os.makedirs(target_dir, exist_ok=True)
 
         # Configure yt-dlp options
-        ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': os.path.join(target_dir, f"{filename_base}.%(ext)s"),
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'geo_bypass': True,
-            'merge_output_format': 'mp4',  # Force output to be mp4
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }],
-        }
+        # Check if ffmpeg is installed
+        has_ffmpeg = shutil.which('ffmpeg') is not None
+
+        # Use video title in the output filename
+        output_template = os.path.join(target_dir, "%(title)s.%(ext)s")
+
+        # If no format_id is provided, show format selection
+        if format_id is None and not is_audio:
+            # Get available formats
+            formats_info = await get_youtube_formats(url)
+            if not formats_info:
+                logger.warning(f"Failed to get formats, falling back to best quality for {url}")
+                # Fall back to best quality
+                format_id = 'best'
+                await message.edit_text("⏳ Failed to get formats. Downloading best quality...")
+            else:
+                # Create format selection message
+                format_msg = f"🎬 **{formats_info['title']}**\n\n**Select Quality:**\n"
+
+                # Add video formats
+                for i, fmt in enumerate(formats_info['formats'][:8]):  # Limit to 8 options
+                    filesize = fmt.get('filesize', 0)
+                    filesize_str = f" ({humanbytes(filesize)})" if filesize else ""
+                    format_msg += f"/{i+1} - {fmt['quality']}{filesize_str}\n"
+
+                # Add audio option
+                if formats_info['audio_formats']:
+                    audio_fmt = formats_info['audio_formats'][0]
+                    filesize = audio_fmt.get('filesize', 0)
+                    filesize_str = f" ({humanbytes(filesize)})" if filesize else ""
+                    format_msg += f"\n/audio - MP3 Audio{filesize_str}\n"
+
+                # Send format selection message
+                await message.edit_text(format_msg)
+                return True, "format_selection"
+
+        # Configure download options based on format selection
+        if is_audio:
+            await message.edit_text("⏳ Downloading YouTube audio...")
+            # Download as MP3
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': output_template,
+                'noplaylist': True,
+                'quiet': True,
+                'no_warnings': True,
+                'nocheckcertificate': True,
+                'geo_bypass': True,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'restrictfilenames': True,  # Restrict filenames to ASCII characters
+            }
+        elif format_id == 'best':
+            await message.edit_text("⏳ Downloading best quality YouTube video...")
+            # Use best quality
+            if has_ffmpeg:
+                ydl_opts = {
+                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                    'outtmpl': output_template,
+                    'noplaylist': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'nocheckcertificate': True,
+                    'geo_bypass': True,
+                    'merge_output_format': 'mp4',  # Force output to be mp4
+                    'postprocessors': [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': 'mp4',
+                    }],
+                    'restrictfilenames': True,  # Restrict filenames to ASCII characters
+                }
+            else:
+                # If ffmpeg is not available, use a single format that doesn't require merging
+                logger.warning("ffmpeg not found. Using fallback format selection without merging.")
+                ydl_opts = {
+                    'format': 'best[ext=mp4]/best',  # Prefer mp4 but fall back to best available single format
+                    'outtmpl': output_template,
+                    'noplaylist': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'nocheckcertificate': True,
+                    'geo_bypass': True,
+                    'restrictfilenames': True,  # Restrict filenames to ASCII characters
+                }
+        else:
+            await message.edit_text("⏳ Downloading selected quality YouTube video...")
+            # Use selected format
+            if has_ffmpeg:
+                ydl_opts = {
+                    'format': f"{format_id}+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    'outtmpl': output_template,
+                    'noplaylist': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'nocheckcertificate': True,
+                    'geo_bypass': True,
+                    'merge_output_format': 'mp4',  # Force output to be mp4
+                    'postprocessors': [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': 'mp4',
+                    }],
+                    'restrictfilenames': True,  # Restrict filenames to ASCII characters
+                }
+            else:
+                # If ffmpeg is not available, use a single format that doesn't require merging
+                logger.warning("ffmpeg not found. Using fallback format selection without merging.")
+                ydl_opts = {
+                    'format': f"{format_id}/best[ext=mp4]/best",
+                    'outtmpl': output_template,
+                    'noplaylist': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'nocheckcertificate': True,
+                    'geo_bypass': True,
+                    'restrictfilenames': True,  # Restrict filenames to ASCII characters
+                }
 
         # Start time for progress calculation
         start_time = time.time()
@@ -242,6 +493,12 @@ async def download_youtube_video(url, file_path, message, user_id=None):
             info = ydl.extract_info(url, download=True)
             downloaded_file = ydl.prepare_filename(info)
 
+            # For MP3 conversion, the extension will be changed
+            if is_audio:
+                # Change extension from original to mp3
+                base_path = os.path.splitext(downloaded_file)[0]
+                downloaded_file = f"{base_path}.mp3"
+
             # Verify the file exists
             if not os.path.exists(downloaded_file):
                 # Try to find the file with a different extension
@@ -257,7 +514,10 @@ async def download_youtube_video(url, file_path, message, user_id=None):
 
             # Get video title for better logging
             video_title = info.get('title', 'Unknown Title')
-            logger.info(f"Downloaded YouTube video: {video_title}")
+            if is_audio:
+                logger.info(f"Downloaded YouTube audio: {video_title}")
+            else:
+                logger.info(f"Downloaded YouTube video: {video_title}")
 
         # Return the actual downloaded file path
         return True, downloaded_file
@@ -462,19 +722,31 @@ async def download_social_media_video(url, file_path, message, user_id=None):
             target_dir = os.path.join(DOWNLOAD_DIR, f"user_{user_id}")
             os.makedirs(target_dir, exist_ok=True)
 
+        # Check if ffmpeg is installed
+        has_ffmpeg = shutil.which('ffmpeg') is not None
+
+        # Use video title in the output filename
+        output_template = os.path.join(target_dir, "%(title)s.%(ext)s")
+
         # Configure yt-dlp options with platform-specific settings
         ydl_opts = {
-            'format': 'best',
-            'outtmpl': os.path.join(target_dir, f"{filename_base}.%(ext)s"),
+            'format': 'best[ext=mp4]/best' if not has_ffmpeg else 'best',
+            'outtmpl': output_template,
             'noplaylist': True,
             'progress_hooks': [],
             'quiet': True,
             'cookiefile': None,  # No cookies by default
             'ignoreerrors': False,
             'no_warnings': True,
-            'merge_output_format': 'mp4',  # Force output to be mp4
-            'ffmpeg_location': 'ffmpeg',  # Ensure ffmpeg is in PATH
+            'restrictfilenames': True,  # Restrict filenames to ASCII characters
         }
+
+        # Add ffmpeg-specific options only if ffmpeg is available
+        if has_ffmpeg:
+            ydl_opts.update({
+                'merge_output_format': 'mp4',  # Force output to be mp4
+                'ffmpeg_location': 'ffmpeg',  # Ensure ffmpeg is in PATH
+            })
 
         # Platform-specific options
         if is_instagram_url(url):
@@ -482,50 +754,65 @@ async def download_social_media_video(url, file_path, message, user_id=None):
             # Use best format to get a complete video with audio
             ydl_opts['format'] = 'best'
             # Add additional options for Instagram
-            ydl_opts.update({
+            instagram_opts = {
                 'extract_flat': False,
                 'ignoreerrors': True,
                 'no_warnings': True,
                 'socket_timeout': 30,
                 'retries': 10,
                 'nocheckcertificate': True,
-                'postprocessors': [{
+            }
+
+            # Add ffmpeg post-processors only if available
+            if has_ffmpeg:
+                instagram_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': 'mp4',
                 }]
-            })
+
+            ydl_opts.update(instagram_opts)
         elif is_tiktok_url(url):
             # TikTok often has watermarks, try to get without watermark
             ydl_opts['format'] = 'best'
             # Add additional options for TikTok
-            ydl_opts.update({
+            tiktok_opts = {
                 'extract_flat': False,
                 'ignoreerrors': True,
                 'no_warnings': True,
                 'socket_timeout': 30,
                 'retries': 10,
                 'nocheckcertificate': True,
-                'postprocessors': [{
+            }
+
+            # Add ffmpeg post-processors only if available
+            if has_ffmpeg:
+                tiktok_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': 'mp4',
                 }]
-            })
+
+            ydl_opts.update(tiktok_opts)
         elif is_twitter_url(url):
             # Twitter videos sometimes need special handling
             ydl_opts['format'] = 'best'
             # Add additional options for Twitter
-            ydl_opts.update({
+            twitter_opts = {
                 'extract_flat': False,
                 'ignoreerrors': True,
                 'no_warnings': True,
                 'socket_timeout': 30,
                 'retries': 10,
                 'nocheckcertificate': True,
-                'postprocessors': [{
+            }
+
+            # Add ffmpeg post-processors only if available
+            if has_ffmpeg:
+                twitter_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': 'mp4',
                 }]
-            })
+
+            ydl_opts.update(twitter_opts)
 
         # Start time for progress calculation
         start_time = time.time()
