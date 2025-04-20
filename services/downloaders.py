@@ -201,13 +201,18 @@ async def download_youtube_video(url, file_path, message, user_id=None):
 
         # Configure yt-dlp options
         ydl_opts = {
-            'format': 'best',
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'outtmpl': os.path.join(target_dir, f"{filename_base}.%(ext)s"),
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
             'nocheckcertificate': True,
             'geo_bypass': True,
+            'merge_output_format': 'mp4',  # Force output to be mp4
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }],
         }
 
         # Start time for progress calculation
