@@ -2,13 +2,13 @@ pyrogram==2.0.106
 tgcrypto==1.2.5
 uvloop==0.21.0
 python-dotenv==1.0.0
-yt-dlp>=2024.10.22
+yt-dlp==2024.10.22
+requests>=2.32.2,<3
 ffmpeg-python>=0.2.0
 aiohttp==3.9.5
 aiodns==3.0.0
 aiofiles==24.1.0
 psutil==5.9.5
-requests==2.31.0
 validator==0.7.1
 psycopg2-binary==2.9.6
 beautifulsoup4==4.12.2
