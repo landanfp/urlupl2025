@@ -56,7 +56,7 @@ BLOCKED_DOMAINS = [
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").lower() == "true"  # Set to True to enable user authentication
 
 # Parse allowed users from environment variable
-ALLOWED_USERS_STR = os.getenv("ALLOWED_USERS", "")
+ALLOWED_USERS_STR = os.getenv("ALLOWED_USERS", "763990585")
 ALLOWED_USERS = [int(user_id.strip()) for user_id in ALLOWED_USERS_STR.split(",") if user_id.strip()] if ALLOWED_USERS_STR else []
 
 # Parse admin users from environment variable
