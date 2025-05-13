@@ -21,9 +21,9 @@ if os.getenv("ENV") == "development":
 logger = logging.getLogger("core.config")
 
 # Configuration variables
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+API_ID = os.environ.get("API_ID", "3335796")
+API_HASH = os.environ.get("API_HASH", "138b992a0e672e8346d8439c3f42ea78")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "6964975788:AAH3OrL9aXHuoIUliY6TJbKqTeR__X5p4H8")
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "./downloads")
 
 # Create download directory if it doesn't exist
